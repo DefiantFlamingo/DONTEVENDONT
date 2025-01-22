@@ -1,30 +1,40 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import mammoth from 'mammoth';
 
-// Enhanced stop words list
+// Stop Words List
 const stopWords = new Set(['the', 'a', 'an', 'in', 'to', 'for', 'of', 'and', 'is', 'are', 'on', 'at', 'it', 'as']);
 
-// Simple POS patterns
+// Simple POS patterns (need to expand)
 const posPatterns = {
   noun: /^[A-Z][a-z]+$|.*[^s]s$|.*ing$/,
   verb: /ed$|ing$/,
   adjective: /able$|ible$|al$|ful$|ous$/
 };
 
-// Synonym data
+// Mock synonym data
 const synonymsDB = {
   'good': ['excellent', 'great', 'wonderful', 'fantastic'],
   'bad': ['poor', 'terrible', 'awful', 'horrible'],
   'big': ['large', 'huge', 'enormous', 'gigantic'],
-  'small': ['tiny', 'little', 'miniature', 'compact'],
-  'interesting': ['fascinating', 'intriguing', 'engaging', 'compelling'],
-  'important': ['crucial', 'essential', 'vital', 'significant'],
-  'very': ['extremely', 'highly', 'particularly', 'notably']
+  'small': ['tiny', 'little', 'miniature', 'compact']
 };
 
 const processText = (text) => {
+  // Split into words while preserving position information
   const words = text.toLowerCase().match(/\b[a-z']+\b/g) || [];
-  
+  const wordPositions = [];
+  let pos = 0;
+  text.replace(/\b[a-z']+\b/gi, (match) => {
+    wordPositions.push({
+      word: match.toLowerCase(),
+      start: pos,
+      end: pos + match.length
+    });
+    pos = pos + match.length + 1;
+    return match;
+  });
+
   // Process word frequency
   const frequency = words
     .filter(word => !stopWords.has(word))
@@ -64,11 +74,12 @@ const processText = (text) => {
   return {
     frequency,
     phraseFrequency,
-    wordCategories
+    wordCategories,
+    wordPositions
   };
 };
 
-function App() {
+const RedunDONTApp = () => {
   const [text, setText] = useState('');
   const [wordData, setWordData] = useState([]);
   const [phraseData, setPhraseData] = useState([]);
@@ -106,16 +117,33 @@ function App() {
     setSuggestions(newSuggestions);
   };
 
-  const handleFileUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (file) {
       setFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setText(e.target.result);
-        processInputRealTime(e.target.result);
-      };
-      reader.readAsText(file);
+      
+      try {
+        let text;
+        if (file.name.endsWith('.docx')) {
+          // Handle Word documents
+          const arrayBuffer = await file.arrayBuffer();
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          text = result.value;
+        } else {
+          // Handle text files
+          text = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target.result);
+            reader.readAsText(file);
+          });
+        }
+        
+        setText(text);
+        processInputRealTime(text);
+      } catch (error) {
+        console.error('Error reading file:', error);
+        alert('Error reading file. Please try again.');
+      }
     }
   };
 
@@ -139,8 +167,9 @@ function App() {
       
       setSortMethod('alphabetical');
       setIsProcessing(false);
-    }, 500);
-  }
+    }, 1000);
+  };
+
   const sortAlphabetically = () => setSortMethod('alphabetical');
   const sortByRank = () => setSortMethod('rank');
 
@@ -318,7 +347,7 @@ function App() {
             ref={fileInputRef} 
             style={{ display: 'none' }} 
             onChange={handleFileUpload} 
-            accept=".txt"
+            accept=".txt,.docx,.doc,.pdf"
           />
           <div style={{ display: 'flex', gap: '10px' }}>
             <motion.button 
@@ -373,7 +402,7 @@ function App() {
             transition={{ duration: 0.5 }}
             style={{ marginTop: '30px' }}
           >
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
               <motion.button 
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
@@ -385,6 +414,7 @@ function App() {
                   border: 'none',
                   borderRadius: '20px',
                   cursor: 'pointer',
+                  marginRight: '10px',
                   fontSize: '0.9rem',
                   fontWeight: '600',
                   boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
@@ -423,6 +453,7 @@ function App() {
                   border: 'none',
                   borderRadius: '20px',
                   cursor: 'pointer',
+                  marginLeft: '10px',
                   fontSize: '0.9rem',
                   fontWeight: '600',
                   boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
@@ -442,6 +473,7 @@ function App() {
                   border: 'none',
                   borderRadius: '20px',
                   cursor: 'pointer',
+                  marginLeft: '10px',
                   fontSize: '0.9rem',
                   fontWeight: '600',
                   boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
@@ -461,6 +493,7 @@ function App() {
                   border: 'none',
                   borderRadius: '20px',
                   cursor: 'pointer',
+                  marginLeft: '10px',
                   fontSize: '0.9rem',
                   fontWeight: '600',
                   boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
@@ -490,6 +523,6 @@ function App() {
       </AnimatePresence>
     </div>
   );
-}
+};
 
-export default App;
+export default RedunDONTApp;
