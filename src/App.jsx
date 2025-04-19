@@ -1,18 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import mammoth from 'mammoth';
+import { CCC_StrictMode } from "../ccc_modules/ccc_strict_mode";
+import { CCC_BanList } from "../ccc_modules/ccc_banlist";
+import { CCC_TopOffenders } from "../ccc_modules/top_offenders";
 
-// Stop Words List
 const stopWords = new Set(['the', 'a', 'an', 'in', 'to', 'for', 'of', 'and', 'is', 'are', 'on', 'at', 'it', 'as']);
 
-// Simple POS patterns (need to expand)
-const posPatterns = {
-  noun: /^[A-Z][a-z]+$|.*[^s]s$|.*ing$/,
-  verb: /ed$|ing$/,
-  adjective: /able$|ible$|al$|ful$|ous$/
-};
-
-// Mock synonym data
 const synonymsDB = {
   'good': ['excellent', 'great', 'wonderful', 'fantastic'],
   'bad': ['poor', 'terrible', 'awful', 'horrible'],
@@ -20,43 +14,48 @@ const synonymsDB = {
   'small': ['tiny', 'little', 'miniature', 'compact']
 };
 
+const clean = (str) =>
+  str
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u201C\u201D‘’“”"”’,:;.!?—–\-…()]/g, '') // remove punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const posPatterns = {
+  noun: /^[a-z]+(?:s|tion|ment|ness|ity|hood)$/, // basic noun endings
+  verb: /^(?:\w+ed|\w+ing|\w+s)$/,               // ends in ed, ing, or s
+  adjective: /(?:ous|ful|able|ible|ic|al|ive|less)$/,
+  adverb: /(?:ly|ward|wise|fast|soon|now|always|never|very|too|so|often|quickly)$/
+};
+
 const processText = (text) => {
-  // Split into words while preserving position information
-  const words = text.toLowerCase().match(/\b[a-z']+\b/g) || [];
-  const wordPositions = [];
-  let pos = 0;
-  text.replace(/\b[a-z']+\b/gi, (match) => {
-    wordPositions.push({
-      word: match.toLowerCase(),
-      start: pos,
-      end: pos + match.length
-    });
-    pos = pos + match.length + 1;
-    return match;
-  });
+  const words = text
+    .toLowerCase()
+    .match(/\b[a-z']{2,}\b/g) || []; // basic cleanup
 
-  // Process word frequency
-  const frequency = words
-    .filter(word => !stopWords.has(word))
-    .reduce((acc, word) => {
-      acc[word] = (acc[word] || 0) + 1;
-      return acc;
-    }, {});
+  const frequency = words.reduce((acc, word) => {
+    acc[word] = (acc[word] || 0) + 1;
+    return acc;
+  }, {});
 
-  // Find phrases (2-word combinations)
   const phrases = [];
   for (let i = 0; i < words.length - 1; i++) {
-    const phrase = words[i] + ' ' + words[i + 1];
-    phrases.push(phrase);
+    phrases.push(words[i] + ' ' + words[i + 1]);
   }
-  
+
   const phraseFrequency = phrases.reduce((acc, phrase) => {
     acc[phrase] = (acc[phrase] || 0) + 1;
     return acc;
   }, {});
 
-  // Identify parts of speech
-  const wordCategories = Object.entries(frequency).reduce((acc, [word, count]) => {
+  const posPatterns = {
+    noun: /(?:tion|ment|ness|ity|ship|ance|ence|er|or|ist|ism|hood|dom|s)$/,
+    verb: /(?:ed|ing|en|ify|ise|ize)$/,
+    adjective: /(?:ous|ful|ish|ive|able|ible|al|ic|ical)$/,
+    adverb: /(?:ly|ward|wise|wards|fast|hard|soon|now|then|already|always|often|never|sometimes)$/
+  };
+
+  const wordCategories = words.reduce((acc, word) => {
     let category = 'other';
     for (const [pos, pattern] of Object.entries(posPatterns)) {
       if (pattern.test(word)) {
@@ -64,22 +63,30 @@ const processText = (text) => {
         break;
       }
     }
-    if (!acc[category]) {
-      acc[category] = [];
-    }
-    acc[category].push({ word, count });
+    if (!acc[category]) acc[category] = [];
+    acc[category].push(word);
     return acc;
   }, {});
+
+  const categorizedCounts = {};
+  for (const [category, list] of Object.entries(wordCategories)) {
+    categorizedCounts[category] = [];
+    const seen = new Set();
+    list.forEach(word => {
+      if (!seen.has(word)) {
+        seen.add(word);
+        categorizedCounts[category].push({ word, count: frequency[word] });
+      }
+    });
+  }
 
   return {
     frequency,
     phraseFrequency,
-    wordCategories,
-    wordPositions
+    wordCategories: categorizedCounts
   };
 };
-
-const RedunDONTApp = () => {
+function App() {
   const [text, setText] = useState('');
   const [wordData, setWordData] = useState([]);
   const [phraseData, setPhraseData] = useState([]);
@@ -88,441 +95,355 @@ const RedunDONTApp = () => {
   const [fileName, setFileName] = useState('');
   const [redundantWords, setRedundantWords] = useState([]);
   const [suggestions, setSuggestions] = useState({});
-  const fileInputRef = useRef(null);
+  const [cccFlags, setCccFlags] = useState([]);
+  const [offenders, setOffenders] = useState([]);
+  const [tab, setTab] = useState('words');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [analysisView, setAnalysisView] = useState('words');
+  const [posOpenStates, setPosOpenStates] = useState({});
+  const fileInputRef = useRef(null);
+  const debounceTimeout = useRef(null);
 
   const handleTextChange = (e) => {
-    setText(e.target.value);
-    processInputRealTime(e.target.value);
-  };
-
-  const processInputRealTime = (currentText) => {
-    const { frequency } = processText(currentText);
-    
-    // Find redundant words (used more than twice)
-    const redundant = Object.entries(frequency)
-      .filter(([_, count]) => count > 2)
-      .map(([word]) => word);
-    
-    setRedundantWords(redundant);
-
-    // Generate synonym suggestions
-    const newSuggestions = {};
-    redundant.forEach(word => {
-      if (synonymsDB[word]) {
-        newSuggestions[word] = synonymsDB[word];
-      }
-    });
-    setSuggestions(newSuggestions);
+    const newText = e.target.value;
+    setText(newText);
+    if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
+    debounceTimeout.current = setTimeout(() => {
+      processInputRealTime(newText);
+    }, 300);
   };
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
-    if (file) {
-      setFileName(file.name);
-      
-      try {
-        let text;
-        if (file.name.endsWith('.docx')) {
-          // Handle Word documents
-          const arrayBuffer = await file.arrayBuffer();
-          const result = await mammoth.extractRawText({ arrayBuffer });
-          text = result.value;
-        } else {
-          // Handle text files
-          text = await new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (e) => resolve(e.target.result);
-            reader.readAsText(file);
-          });
-        }
-        
-        setText(text);
-        processInputRealTime(text);
-      } catch (error) {
-        console.error('Error reading file:', error);
-        alert('Error reading file. Please try again.');
+    if (!file) return;
+
+    setFileName(file.name);
+    try {
+      let text;
+      if (file.name.endsWith('.docx')) {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        text = result.value;
+      } else {
+        text = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target.result);
+          reader.readAsText(file);
+        });
       }
+      setText(text);
+      processInputRealTime(text);
+    } catch (err) {
+      console.error('Here for it:', err);
+      alert('Feed me redundancies!');
     }
+  };
+
+  const processInputRealTime = (inputText) => {
+    const { frequency, phraseFrequency, wordCategories } = processText(inputText);
+  
+    setWordData(Object.entries(frequency).map(([word, count]) => ({ word, count })));
+    setPhraseData(
+      Object.entries(phraseFrequency)
+        .filter(([_, count]) => count > 1)
+        .map(([phrase, count]) => ({ phrase, count }))
+    );
+    const filteredCategories = Object.entries(wordCategories)
+  .filter(([_, words]) => words.length > 0)
+  .reduce((acc, [category, words]) => {
+    acc[category] = words;
+    return acc;
+  }, {});
+setPosData(filteredCategories);
+  
+    const redundant = Object.entries(frequency)
+      .filter(([_, count]) => count > 2)
+      .map(([word]) => word);
+    setRedundantWords(redundant);
+  
+    const suggestionsMap = {};
+    redundant.forEach(word => {
+      if (synonymsDB[word]) {
+        suggestionsMap[word] = synonymsDB[word];
+      }
+    });
+    setSuggestions(suggestionsMap);
+
+    const strictFlags = CCC_StrictMode.enableStrictMode(inputText, frequency);
+    setCccFlags([...strictFlags, ...CCC_BanList(inputText)]);
+  
+    const topOffenders = CCC_TopOffenders.getTopOffenders(inputText);
+    setOffenders(topOffenders);
   };
 
   const processInput = () => {
     setIsProcessing(true);
     setTimeout(() => {
-      const { frequency, phraseFrequency, wordCategories } = processText(text);
-      
-      // Process word data
-      const wordArray = Object.entries(frequency).map(([word, count]) => ({ word, count }));
-      setWordData(wordArray);
-      
-      // Process phrase data
-      const phraseArray = Object.entries(phraseFrequency)
-        .filter(([_, count]) => count > 1)
-        .map(([phrase, count]) => ({ phrase, count }));
-      setPhraseData(phraseArray);
-      
-      // Process POS data
-      setPosData(wordCategories);
-      
-      setSortMethod('alphabetical');
+      processInputRealTime(text);
       setIsProcessing(false);
-    }, 1000);
-  };
-
-  const sortAlphabetically = () => setSortMethod('alphabetical');
-  const sortByRank = () => setSortMethod('rank');
-
-  const getSortedData = () => {
-    if (analysisView === 'words') {
-      return [...wordData].sort((a, b) => {
-        if (sortMethod === 'alphabetical') {
-          return a.word.localeCompare(b.word);
-        }
-        return b.count - a.count || a.word.localeCompare(b.word);
-      });
-    }
-    
-    if (analysisView === 'phrases') {
-      return [...phraseData].sort((a, b) => {
-        if (sortMethod === 'alphabetical') {
-          return a.phrase.localeCompare(b.phrase);
-        }
-        return b.count - a.count || a.phrase.localeCompare(b.phrase);
-      });
-    }
-    
-    return [];
-  };
-
-  const renderAnalysisContent = () => {
-    if (analysisView === 'pos') {
-      return (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '20px' }}>
-          {Object.entries(posData).map(([category, words]) => (
-            <div key={category} style={{
-              backgroundColor: 'rgba(255, 255, 255, 0.8)',
-              padding: '15px',
-              borderRadius: '10px',
-              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
-            }}>
-              <h3 style={{ color: '#2c3e50', marginBottom: '10px', textTransform: 'capitalize' }}>{category}</h3>
-              <ul style={{ listStyleType: 'none', padding: 0, margin: 0 }}>
-                {words.map(({ word, count }) => (
-                  <li key={word} style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    padding: '5px 0'
-                  }}>
-                    <span>{word}</span>
-                    <span style={{
-                      backgroundColor: '#3498db',
-                      color: 'white',
-                      borderRadius: '20px',
-                      padding: '2px 8px',
-                      fontSize: '0.8rem'
-                    }}>{count}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      );
-    }
-
-    const sortedData = getSortedData();
-    return (
-      <ul style={{ listStyleType: 'none', padding: 0, margin: 0 }}>
-        {sortedData.map((item, index) => (
-          <motion.li 
-            key={item.word || item.phrase}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.3, delay: index * 0.03 }}
-            style={{ 
-              marginBottom: '10px', 
-              padding: '10px 15px', 
-              backgroundColor: index % 2 === 0 ? 'rgba(236, 240, 241, 0.6)' : 'rgba(255, 255, 255, 0.6)',
-              borderRadius: '8px',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)'
-            }}
-          >
-            <div>
-              <strong style={{ color: '#2c3e50' }}>{item.word || item.phrase}</strong>
-              {suggestions[item.word] && (
-                <div style={{ fontSize: '0.8rem', color: '#7f8c8d', marginTop: '4px' }}>
-                  Try: {suggestions[item.word].join(', ')}
-                </div>
-              )}
-            </div>
-            <span style={{ 
-              backgroundColor: '#3498db', 
-              color: 'white', 
-              borderRadius: '20px', 
-              padding: '3px 10px', 
-              fontSize: '0.8rem' 
-            }}>{item.count}</span>
-          </motion.li>
-        ))}
-      </ul>
-    );
+    }, 500);
   };
 
   return (
-    <div style={{
-      fontFamily: "'Poppins', sans-serif",
-      maxWidth: '900px',
-      margin: '0 auto',
-      padding: '40px 20px',
-      background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
-      minHeight: '100vh',
-      boxSizing: 'border-box'
-    }}>
-      <motion.h1 
-        initial={{ y: -50, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ duration: 0.5 }}
-        style={{ 
-          color: '#2c3e50', 
-          textAlign: 'center', 
-          fontSize: '3.5rem', 
-          marginBottom: '30px',
-          textShadow: '2px 2px 4px rgba(0,0,0,0.1)'
+    <div style={{ fontFamily: 'sans-serif', maxWidth: '900px', margin: '0 auto', padding: '40px 20px' }}>
+      <h1 style={{ textAlign: 'center', fontSize: '3rem', marginBottom: '30px' }}>
+        RedunDON<span style={{ color: '#e74c3c' }}>🗡️</span>T Pro
+      </h1>
+
+      <textarea
+        value={text}
+        onChange={handleTextChange}
+        placeholder="Paste your text or upload a document"
+        rows="8"
+        style={{
+          width: '100%',
+          padding: '20px',
+          fontSize: '1.1rem',
+          borderRadius: '12px',
+          border: '1px solid #444',
+          backgroundColor: '#1e1e1e',
+          color: '#f5f5f5',
+          boxShadow: 'inset 0 2px 6px rgba(0, 0, 0, 0.3)',
+          outline: 'none',
+          transition: '0.3s ease',
         }}
-      >
-        RedunDON'T App Pro
-      </motion.h1>
-      <motion.div 
-        initial={{ y: 50, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ duration: 0.5, delay: 0.2 }}
-      >
-        <textarea
-          value={text}
-          onChange={handleTextChange}
-          placeholder="Enter your text here or upload a document"
-          rows="8"
-          style={{
-            width: '100%',
-            padding: '15px',
-            marginBottom: '20px',
-            borderRadius: '10px',
-            border: '1px solid #bdc3c7',
-            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-            fontSize: '1rem',
-            resize: 'vertical'
-          }}
+        onFocus={(e) => {
+          e.target.style.boxShadow = '0 0 10px #00bfff, inset 0 2px 6px rgba(0, 0, 0, 0.3)';
+          e.target.style.borderColor = '#00bfff';
+        }}
+        onBlur={(e) => {
+          e.target.style.boxShadow = 'inset 0 2px 6px rgba(0, 0, 0, 0.3)';
+          e.target.style.borderColor = '#444';
+        }}
+      />
+
+      <div style={{ textAlign: 'center', margin: '20px 0' }}>
+        <label htmlFor="file-upload" style={{
+          display: 'inline-block',
+          padding: '10px 22px',
+          backgroundColor: '#9b59b6',
+          color: '#fff',
+          borderRadius: '30px',
+          cursor: 'pointer',
+          fontWeight: '600',
+          fontSize: '0.95rem',
+          transition: 'all 0.3s ease',
+          boxShadow: '0 4px 10px rgba(155, 89, 182, 0.4)',
+        }}>
+          📄 Upload Document
+        </label>
+        <input
+          id="file-upload"
+          type="file"
+          accept=".txt,.docx"
+          onChange={handleFileUpload}
+          style={{ display: 'none' }}
+          ref={fileInputRef}
         />
-        {redundantWords.length > 0 && (
-          <div style={{
-            backgroundColor: 'rgba(231, 76, 60, 0.1)',
-            padding: '10px',
-            borderRadius: '8px',
-            marginBottom: '20px'
-          }}>
-            <p style={{ color: '#c0392b', margin: '0 0 5px 0' }}>Redundant words detected:</p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-              {redundantWords.map(word => (
-                <span key={word} style={{
-                  backgroundColor: '#e74c3c',
-                  color: 'white',
-                  padding: '2px 8px',
-                  borderRadius: '12px',
-                  fontSize: '0.8rem'
-                }}>
-                  {word}
-                  {suggestions[word] && ` (Try: ${suggestions[word][0]})`}
-                </span>
-              ))}
-            </div>
+        {fileName && (
+          <div style={{ marginTop: '10px', color: '#aaa', fontSize: '0.9rem' }}>
+            📎 {fileName}
           </div>
         )}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            style={{ display: 'none' }} 
-            onChange={handleFileUpload} 
-            accept=".txt,.docx,.doc,.pdf"
-          />
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => fileInputRef.current.click()} 
-              style={{
-                padding: '12px 24px',
-                backgroundColor: '#3498db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '30px',
-                cursor: 'pointer',
-                fontSize: '1rem',
-                fontWeight: '600',
-                boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-                transition: 'all 0.3s ease'
-              }}
-            >
-              Upload
-            </motion.button>
-            {fileName && <span style={{ color: '#34495e', alignSelf: 'center' }}>Uploaded: {fileName}</span>}
-          </div>
-          <motion.button 
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={processInput} 
-            disabled={isProcessing}
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '25px' }}>
+        {[
+          { key: 'words', label: 'Words', color: '#e74c3c' },
+          { key: 'phrases', label: 'Phrases', color: '#8e44ad' },
+          { key: 'offenders', label: 'Top Offenders', color: '#d35400' },
+          { key: 'flags', label: 'Red Pen Flags', color: '#c0392b' },
+          { key: 'pos', label: 'Parts of Speech', color: '#27ae60' },
+        ].map(({ key, label, color }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
             style={{
-              padding: '12px 24px',
-              backgroundColor: '#e74c3c',
-              color: 'white',
+              padding: '10px 22px',
+              backgroundColor: tab === key ? color : '#333',
+              color: tab === key ? '#fff' : '#ccc',
               border: 'none',
-              borderRadius: '30px',
+              borderRadius: '20px',
               cursor: 'pointer',
-              fontSize: '1rem',
-              fontWeight: '600',
-              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-              transition: 'all 0.3s ease'
+              fontSize: '0.95rem',
+              fontWeight: 600,
+              transition: 'all 0.25s ease',
+              boxShadow: tab === key ? `0 4px 10px ${color}55` : 'none',
+              textShadow: tab === key ? '1px 1px 2px #000' : 'none'
             }}
           >
-            {isProcessing ? 'Processing...' : 'Analyze Text'}
-          </motion.button>
-        </div>
-      </motion.div>
-      <AnimatePresence>
-        {wordData.length > 0 && (
-          <motion.div 
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            transition={{ duration: 0.5 }}
-            style={{ marginTop: '30px' }}
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Sort Buttons */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginBottom: '30px', flexWrap: 'wrap' }}>
+        {[
+          { key: 'alphabetical', label: 'Sort A–Z', color: '#2980b9' },
+          { key: 'rank', label: 'Sort by Rank', color: '#16a085' }
+        ].map(({ key, label, color }) => (
+          <button
+            key={key}
+            onClick={() => setSortMethod(key)}
+            style={{
+              padding: '10px 22px',
+              backgroundColor: sortMethod === key ? color : '#444',
+              color: sortMethod === key ? '#fff' : '#ccc',
+              border: 'none',
+              borderRadius: '20px',
+              cursor: 'pointer',
+              fontSize: '0.9rem',
+              fontWeight: '600',
+              transition: 'all 0.25s ease',
+              boxShadow: sortMethod === key ? `0 4px 10px ${color}55` : 'none',
+              textShadow: sortMethod === key ? '1px 1px 2px #000' : 'none'
+            }}
           >
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={sortAlphabetically} 
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: sortMethod === 'alphabetical' ? '#2ecc71' : '#95a5a6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  marginRight: '10px',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                Alphabetical
-              </motion.button>
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={sortByRank} 
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: sortMethod === 'rank' ? '#2ecc71' : '#95a5a6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                Rank
-              </motion.button>
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setAnalysisView('words')} 
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: analysisView === 'words' ? '#2ecc71' : '#95a5a6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  marginLeft: '10px',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                Words
-              </motion.button>
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setAnalysisView('phrases')} 
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: analysisView === 'phrases' ? '#2ecc71' : '#95a5a6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  marginLeft: '10px',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                Phrases
-              </motion.button>
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setAnalysisView('pos')} 
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: analysisView === 'pos' ? '#2ecc71' : '#95a5a6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  marginLeft: '10px',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                Parts of Speech
-              </motion.button>
-            </div>
-            <div style={{ 
-              height: '400px', 
-              overflowY: 'auto', 
-              borderRadius: '10px', 
-              padding: '15px',
-              backgroundColor: 'rgba(255, 255, 255, 0.8)',
-              boxShadow: '0 10px 20px rgba(0, 0, 0, 0.1)'
-            }}>
-              {renderAnalysisContent()}
-            </div>
-            <p style={{ color: '#7f8c8d', fontSize: '0.9em', marginTop: '10px', textAlign: 'center' }}>
-              {analysisView === 'words' && `Showing ${wordData.length} unique words`}
-              {analysisView === 'phrases' && `Showing ${phraseData.length} repeated phrases`}
-              {analysisView === 'pos' && 'Showing words by part of speech'}
-            </p>
-          </motion.div>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Results Container */}
+      <div style={{
+        backgroundColor: '#fdfdfd',
+        padding: '25px',
+        borderRadius: '14px',
+        boxShadow: '0 8px 16px rgba(0, 0, 0, 0.08)',
+        minHeight: '350px',
+        marginBottom: '40px',
+        border: '1px solid #e1e4e8'
+      }}>
+        {tab === 'words' && (
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {[...wordData].sort((a, b) => {
+              if (sortMethod === 'alphabetical') return a.word.localeCompare(b.word);
+              return b.count - a.count || a.word.localeCompare(b.word);
+            }).map(({ word, count }) => (
+              <li key={word} style={{ marginBottom: '10px' }}>
+                <strong>{word}</strong> — {count}
+                {suggestions[word] && (
+                  <div style={{
+                    fontSize: '0.85rem',
+                    backgroundColor: '#fff8e1',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    marginTop: '6px',
+                    color: '#6c4c00',
+                    boxShadow: 'inset 0 0 4px rgba(0,0,0,0.05)'
+                  }}>
+                    ✏️ Try: {suggestions[word].join(', ')}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
         )}
-      </AnimatePresence>
+
+{tab === 'phrases' && (
+  <ul style={{ listStyle: 'none', padding: 0 }}>
+    {[...phraseData].sort((a, b) => {
+      if (sortMethod === 'alphabetical') return a.phrase.localeCompare(b.phrase);
+      return b.count - a.count || a.phrase.localeCompare(b.phrase);
+    }).map(({ phrase, count }) => (
+      <li key={phrase} style={{ marginBottom: '10px' }}>
+        <strong>{phrase}</strong> — {count}
+      </li>
+    ))}
+  </ul>
+)}
+
+{tab === 'offenders' && (
+  <ul style={{ listStyle: 'none', padding: 0 }}>
+    {offenders.length === 0 ? (
+      <li style={{ color: '#aaa', fontStyle: 'italic' }}>No top offenders detected.</li>
+    ) : (
+      offenders.map((entry, i) => {
+        const [word, count] = typeof entry === 'string' ? entry.split(' — ') : [entry.word, entry.count];
+        return (
+          <li key={i} style={{ marginBottom: '10px' }}>
+            <strong>{word}</strong> — {count}
+          </li>
+        );
+      })
+    )}
+  </ul>
+)}
+
+        {tab === 'flags' && (
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {cccFlags.length === 0 ? (
+              <li style={{ color: '#aaa', fontStyle: 'italic' }}>No red flags found.</li>
+            ) : (
+              cccFlags.map((flag, i) => (
+                <li key={i} style={{ marginBottom: '10px' }}>
+                  {typeof flag === 'string' ? (
+                    flag
+                  ) : (
+                    <>
+                      <strong>{flag.word}</strong> — {flag.count} <br />
+                      <em>{flag.message}</em>
+                    </>
+                  )}
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+
+{tab === 'pos' && (
+  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '20px' }}>
+    {Object.entries(posData).map(([category, words]) => (
+      <div
+        key={category}
+        style={{
+          padding: '10px',
+          border: '1px solid #ddd',
+          borderRadius: '8px',
+          backgroundColor: '#fafafa'
+        }}
+      >
+        <h3
+          onClick={() =>
+            setPosOpenStates(prev => ({
+              ...prev,
+              [category]: !prev[category]
+            }))
+          }
+          style={{
+            cursor: 'pointer',
+            color: '#2c3e50',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '10px'
+          }}
+        >
+          {category.charAt(0).toUpperCase() + category.slice(1)}
+          <span>{posOpenStates[category] ? '▲' : '▼'}</span>
+        </h3>
+        {posOpenStates[category] && (
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {[...words]
+              .sort((a, b) => {
+                if (sortMethod === 'alphabetical') return a.word.localeCompare(b.word);
+                return b.count - a.count || a.word.localeCompare(b.word);
+              })
+              .map(({ word, count }) => (
+                <li key={word} style={{ marginBottom: '6px' }}>
+                  <strong>{word}</strong> — {count}
+                </li>
+              ))}
+          </ul>
+        )}
+      </div>
+    ))}
+  </div>
+)}
+      </div>
     </div>
   );
-};
+}
 
-export default RedunDONTApp;
+export default App;
